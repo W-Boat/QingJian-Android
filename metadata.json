@@ -1,0 +1,6 @@
+{
+  "name": "青简 Android",
+  "description": "独立安卓端长篇 AI 小说创作工作台，聚焦可审批改稿、跨章定稿交接、五级伏笔因果工作台、高级世界书、隔离 JS 技能沙箱与 Git-First 多路线版本控制。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

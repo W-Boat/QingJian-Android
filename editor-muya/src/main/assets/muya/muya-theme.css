@@ -1,0 +1,204 @@
+:root {
+  --qj-bg: #F7F8FA;
+  --qj-surface: #FFFFFF;
+  --qj-text: #1B1F24;
+  --qj-text-muted: #59636E;
+  --qj-border: rgba(27, 31, 36, 0.10);
+  --qj-accent: #1F7A6E;
+  --qj-accent-soft: rgba(31, 122, 110, 0.11);
+  --qj-highlight: rgba(180, 120, 24, 0.18);
+  --qj-max-width: 680px;
+}
+
+body.dark {
+  --qj-bg: #0E1014;
+  --qj-surface: #171A21;
+  --qj-text: #E6EAF0;
+  --qj-text-muted: #8E98A6;
+  --qj-border: rgba(230, 234, 240, 0.10);
+  --qj-accent-soft: rgba(31, 122, 110, 0.22);
+  --qj-highlight: rgba(217, 155, 56, 0.24);
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--qj-bg);
+  color: var(--qj-text);
+  font-family: "Noto Serif SC", "Songti SC", Georgia, serif;
+  font-size: 16.5px;
+  line-height: 1.85;
+  overscroll-behavior: contain;
+}
+
+#muya-shell {
+  width: 100%;
+  max-width: var(--qj-max-width);
+  margin: 0 auto;
+  padding: 20px 18px 140px 18px;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.muya-block {
+  position: relative;
+  padding: 10px 12px;
+  margin: 6px 0;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  transition: background-color 140ms ease, border-color 140ms ease;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.muya-block.active {
+  background: var(--qj-surface);
+  border-color: var(--qj-border);
+}
+
+.muya-block.selected {
+  background: var(--qj-accent-soft);
+  border-color: var(--qj-accent);
+}
+
+.muya-block.flash-anchor {
+  background: var(--qj-highlight);
+  border-color: var(--qj-accent);
+}
+
+.muya-block-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.muya-check {
+  width: 18px;
+  height: 18px;
+  margin-top: 6px;
+  flex-shrink: 0;
+  border-radius: 5px;
+  border: 1.5px solid var(--qj-text-muted);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-family: sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  color: #FFFFFF;
+}
+
+.multi-select-on .muya-check {
+  display: flex;
+}
+
+.muya-block.selected .muya-check {
+  background: var(--qj-accent);
+  border-color: var(--qj-accent);
+}
+
+.muya-content {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.muya-content h1 {
+  font-family: sans-serif;
+  font-size: 1.45em;
+  font-weight: 700;
+  margin: 0.2em 0;
+  line-height: 1.4;
+}
+
+.muya-content h2 {
+  font-family: sans-serif;
+  font-size: 1.24em;
+  font-weight: 600;
+  margin: 0.2em 0;
+  line-height: 1.45;
+}
+
+.muya-content h3 {
+  font-family: sans-serif;
+  font-size: 1.08em;
+  font-weight: 600;
+  margin: 0.2em 0;
+}
+
+.muya-content p {
+  margin: 0;
+  text-indent: 2em;
+}
+
+.muya-content blockquote {
+  margin: 2px 0;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: var(--qj-surface);
+  border: 1px solid var(--qj-border);
+  color: var(--qj-text-muted);
+  font-size: 0.95em;
+}
+
+.muya-content ul, .muya-content ol {
+  margin: 2px 0;
+  padding-left: 1.5em;
+}
+
+.muya-scene-break {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 8px 0;
+  color: var(--qj-text-muted);
+  font-family: sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.18em;
+}
+
+.muya-scene-break::before,
+.muya-scene-break::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: var(--qj-border);
+}
+
+.muya-meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+  font-family: sans-serif;
+  font-size: 11.5px;
+  color: var(--qj-text-muted);
+}
+
+.muya-meta-mark {
+  color: var(--qj-accent);
+  font-weight: 600;
+}
+
+.muya-source {
+  width: 100%;
+  min-height: 72vh;
+  padding: 16px;
+  border-radius: 10px;
+  border: 1px solid var(--qj-border);
+  background: var(--qj-surface);
+  color: var(--qj-text);
+  font-family: ui-monospace, "JetBrains Mono", monospace;
+  font-size: 14px;
+  line-height: 1.75;
+  outline: none;
+  resize: vertical;
+}

@@ -83,13 +83,16 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk dist-apk/qingjian-android-debug.apk
 
       - name: Assemble Signed Release APK (when keystore secrets are configured)
-        if: ${{ secrets.KEYSTORE_BASE64 != '' && secrets.STORE_PASSWORD != '' && secrets.KEY_PASSWORD != '' }}
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
         run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "Keystore secrets not configured; skipping Release APK build."
+            exit 0
+          fi
           echo "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
           gradle :app:assembleRelease --no-daemon --stacktrace
           cp app/build/outputs/apk/release/app-release.apk dist-apk/qingjian-android-release.apk

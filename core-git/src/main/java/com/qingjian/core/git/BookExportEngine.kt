@@ -137,8 +137,8 @@ object BookExportEngine {
         method = ZipEntry.STORED
         size = mimeBytes.size.toLong()
         compressedSize = mimeBytes.size.toLong()
-        val crc = CRC32().apply { update(mimeBytes) }
-        crc = crc.value
+        val checksum = CRC32().apply { update(mimeBytes) }
+        crc = checksum.value
       }
       zos.putNextEntry(mimeEntry)
       zos.write(mimeBytes)

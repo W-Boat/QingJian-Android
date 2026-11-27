@@ -1,0 +1,111 @@
+name: Build QingJian Android APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_unit_tests:
+        description: "Run Kotlin core unit tests before packaging APK"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    name: Assemble QingJian Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 36.1 & Build-Tools
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-36.1" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Ensure debug.keystore exists for debugConfig signing
+        run: |
+          if [ ! -f debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=QingJian,C=CN"
+          fi
+
+      - name: Set up Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Run core Kotlin unit tests
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_unit_tests }}
+        run: |
+          gradle \
+            :core-git:testDebugUnitTest \
+            :core-storage:testDebugUnitTest \
+            :core-eta:testDebugUnitTest \
+            :core-sandbox-js:testDebugUnitTest \
+            :editor-muya:testDebugUnitTest \
+            --no-daemon --stacktrace
+
+      - name: Assemble Debug APK
+        run: |
+          gradle :app:assembleDebug --no-daemon --stacktrace
+          mkdir -p dist-apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist-apk/qingjian-android-debug.apk
+
+      - name: Assemble Signed Release APK (when keystore secrets are configured)
+        if: ${{ secrets.KEYSTORE_BASE64 != '' && secrets.STORE_PASSWORD != '' && secrets.KEY_PASSWORD != '' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          gradle :app:assembleRelease --no-daemon --stacktrace
+          cp app/build/outputs/apk/release/app-release.apk dist-apk/qingjian-android-release.apk
+          rm -f "$KEYSTORE_PATH"
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qingjian-android-apk
+          path: dist-apk/*.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Publish GitHub Release on version tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-apk/*.apk
+          generate_release_notes: true

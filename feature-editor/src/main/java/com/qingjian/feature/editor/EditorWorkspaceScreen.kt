@@ -124,7 +124,7 @@ fun EditorWorkspaceScreen(
   onAcceptFullScreenDiff: (editedText: String) -> Unit,
   onRejectFullScreenDiff: () -> Unit,
   onUndoLastRevision: () -> Unit,
-  onTriggerChapterDraftPipeline: (summary: String, simulateReviewFailure: Boolean) -> Unit,
+  onTriggerChapterDraftPipeline: (summary: String) -> Unit,
   onResumeFailedPipeline: (runId: String) -> Unit,
   onFinalizeChapterAndGenerateHandoff: () -> Unit,
   onSaveHandoffBrief: (HandoffBrief) -> Unit,
@@ -709,20 +709,11 @@ fun EditorWorkspaceScreen(
             minLines = 3,
             modifier = Modifier.fillMaxWidth(),
           )
-          OutlinedButton(
-            onClick = {
-              onTriggerChapterDraftPipeline(summaryPrompt.trim(), true)
-              showPipelineDialog = false
-            },
-            modifier = Modifier.fillMaxWidth(),
-          ) {
-            Text("演练：初稿落盘后模拟复审失败（验证断点续跑）")
-          }
         }
       },
       confirmButton = {
         Button(onClick = {
-          onTriggerChapterDraftPipeline(summaryPrompt.trim(), false)
+          onTriggerChapterDraftPipeline(summaryPrompt.trim())
           showPipelineDialog = false
         }) { Text("启动生成与复审") }
       },

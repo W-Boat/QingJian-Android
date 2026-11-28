@@ -59,6 +59,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.qingjian.core.git.ExportFormat
 import com.qingjian.core.storage.BookIndexEntity
+import top.yukonga.miuix.kmp.basic.ButtonDefaults as MiuixButtonDefaults
+import top.yukonga.miuix.kmp.basic.Card as MiuixCard
+import top.yukonga.miuix.kmp.basic.HorizontalDivider as MiuixHorizontalDivider
+import top.yukonga.miuix.kmp.basic.Text as MiuixText
+import top.yukonga.miuix.kmp.basic.TextButton as MiuixTextButton
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private val CoverPresets = listOf(
   Triple("青玉笺", 0xFF1A3A3A, 0xFF2B6E63),
@@ -87,61 +93,84 @@ fun BookshelfScreen(
   var settingsTargetBook by remember { mutableStateOf<BookIndexEntity?>(null) }
   var lastExportResult by remember { mutableStateOf<String?>(null) }
 
-  Column(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-    // Clean single-row top bar
+  Column(modifier = modifier.fillMaxSize().background(MiuixTheme.colorScheme.background)) {
+    // Clean single-row Miuix top bar
     Row(
       modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.SpaceBetween,
     ) {
       Column {
-        Text(
+        MiuixText(
           text = "青简书架",
-          style = MaterialTheme.typography.titleLarge,
+          style = MiuixTheme.textStyles.title2,
           fontWeight = FontWeight.SemiBold,
-          color = MaterialTheme.colorScheme.onBackground,
+          color = MiuixTheme.colorScheme.onBackground,
         )
-        Text(
+        MiuixText(
           text = "共 ${books.size} 部独立 Git 仓库书稿 · 本地单一事实来源",
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          style = MiuixTheme.textStyles.footnote1,
+          color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
         )
       }
-      Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+      Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         IconButton(onClick = onToggleViewMode) {
           Icon(
             imageVector = if (isGridView) Icons.Outlined.ViewAgenda else Icons.Outlined.GridView,
             contentDescription = "切换视图",
+            tint = MiuixTheme.colorScheme.onSurface,
           )
         }
         IconButton(onClick = onOpenAiSettings) {
-          Icon(imageVector = Icons.Outlined.Settings, contentDescription = "AI 引擎与主题设置")
+          Icon(
+            imageVector = Icons.Outlined.Settings,
+            contentDescription = "Eta 引擎与 Miuix 主题设置",
+            tint = MiuixTheme.colorScheme.onSurface,
+          )
         }
-        Button(
+        MiuixTextButton(
+          text = "新建书稿",
           onClick = { showCreateDialog = true },
-          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-          shape = RoundedCornerShape(10.dp),
-        ) {
-          Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-          Spacer(Modifier.width(4.dp))
-          Text("新建书稿", maxLines = 1)
-        }
+          colors = MiuixButtonDefaults.textButtonColorsPrimary(),
+          minHeight = 38.dp,
+        )
       }
     }
 
-    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    MiuixHorizontalDivider()
 
     if (books.isEmpty()) {
-      Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-          Text("书架尚空", style = MaterialTheme.typography.titleMedium)
-          Text(
-            "新建一部长篇书稿，系统将自动初始化独立 Git 仓库与 Room 索引。",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-          )
-          Button(onClick = { showCreateDialog = true }) {
-            Text("创建第一部作品")
+      Box(modifier = Modifier.fillMaxSize().padding(20.dp), contentAlignment = Alignment.Center) {
+        MiuixCard(modifier = Modifier.fillMaxWidth()) {
+          Column(
+            modifier = Modifier.padding(24.dp).fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+          ) {
+            MiuixText(
+              text = "书架尚空",
+              style = MiuixTheme.textStyles.title3,
+              color = MiuixTheme.colorScheme.onSurfaceContainer,
+            )
+            MiuixText(
+              text = "新建一部长篇书稿，系统将自动初始化独立本地 Eclipse JGit 仓库与 Room 索引；随后请在右上角设置中绑定 API Key 或完成 ChatGPT Codex OAuth 授权。",
+              style = MiuixTheme.textStyles.body2,
+              color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+              MiuixTextButton(
+                text = "创建第一部作品",
+                onClick = { showCreateDialog = true },
+                colors = MiuixButtonDefaults.textButtonColorsPrimary(),
+                minHeight = 40.dp,
+              )
+              MiuixTextButton(
+                text = "配置 Eta 引擎",
+                onClick = onOpenAiSettings,
+                colors = MiuixButtonDefaults.textButtonColors(),
+                minHeight = 40.dp,
+              )
+            }
           }
         }
       }

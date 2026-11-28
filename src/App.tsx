@@ -77,6 +77,7 @@ function loadInitialPrefs(): StoredPrefs {
 export default function App() {
   const [books, setBooks] = useState<NovelProject[]>(loadInitialBooks);
   const [prefs, setPrefs] = useState<StoredPrefs>(loadInitialPrefs);
+  const [diskSynced, setDiskSynced] = useState(false);
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('EDITOR');
   const [activeBookId, setActiveBookId] = useState<string>(() => books[0]?.id ?? 'book_white_tower');
@@ -92,7 +93,43 @@ export default function App() {
   const activeProfile =
     prefs.profiles.find((p) => p.id === prefs.activeProfileId) ?? prefs.profiles[0];
 
-  // Persist state
+  // Hydrate real disk workspace from Express `/api/workspace` on startup
+  useEffect(() => {
+    let active = true;
+    fetch('/api/workspace')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { initialized?: boolean; books?: NovelProject[]; prefs?: Partial<StoredPrefs> } | null) => {
+        if (!active || !data) return;
+        if (data.initialized && Array.isArray(data.books) && data.books.length > 0) {
+          setBooks(data.books);
+          setActiveBookId(data.books[0].id);
+          const firstCh = data.books[0].workspace.chapters[0]?.chapterId;
+          if (firstCh) setActiveChapterId(firstCh);
+        }
+        if (data.prefs) {
+          setPrefs((prev) => ({
+            ...prev,
+            ...data.prefs,
+            profiles:
+              Array.isArray(data.prefs?.profiles) && data.prefs.profiles.length > 0
+                ? data.prefs.profiles
+                : prev.profiles,
+            usageLogs: Array.isArray(data.prefs?.usageLogs) ? data.prefs.usageLogs : prev.usageLogs,
+          }));
+        }
+      })
+      .catch(() => {
+        // offline preview fallback to localStorage cache
+      })
+      .finally(() => {
+        if (active) setDiskSynced(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Persist state to localStorage + real human-readable disk files via `/api/workspace`
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY_BOOKS, JSON.stringify(books));
@@ -108,6 +145,20 @@ export default function App() {
       // ignore
     }
   }, [prefs]);
+
+  useEffect(() => {
+    if (!diskSynced) return;
+    const timer = setTimeout(() => {
+      fetch('/api/workspace', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ books, prefs }),
+      }).catch(() => {
+        // ignore transient network errors during autosave
+      });
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [books, prefs, diskSynced]);
 
   // Sync dark mode class and Miuix accent CSS variable
   useEffect(() => {

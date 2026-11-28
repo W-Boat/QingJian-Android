@@ -31,8 +31,6 @@ import {
 } from 'lucide-react';
 import {
   assembleTransparentContext,
-  buildLocalHandoffFallback,
-  buildLocalRewriteFallback,
   requestAiCompletion,
 } from '../core/aiClient';
 import {
@@ -174,7 +172,6 @@ export const MuyaEditorView: React.FC<MuyaEditorViewProps> = ({
     volumeTitle: string;
     directionTitle: string;
     summary: string;
-    simulateReviewFailure: boolean;
     busy: boolean;
   } | null>(null);
   const [showGitModal, setShowGitModal] = useState(false);
@@ -185,7 +182,6 @@ export const MuyaEditorView: React.FC<MuyaEditorViewProps> = ({
     project.commits[0]?.hash ?? null,
   );
   const [pipelineBusy, setPipelineBusy] = useState(false);
-  const [simulateReviewFailForChapter, setSimulateReviewFailForChapter] = useState(false);
 
   // Scroll to highlighted block from Plot Workbench / Foreshadow jump
   useEffect(() => {
@@ -475,8 +471,6 @@ export const MuyaEditorView: React.FC<MuyaEditorViewProps> = ({
           systemPrompt: assembled.systemPrompt,
           userPrompt: `${assembled.userPrompt}\n\n请仅改写以下单段正文并保持其原有 Markdown 结构：\n${target.markdown}`,
           taskLabel: '单段局部改稿',
-          localFallbackGenerator: () =>
-            buildLocalRewriteFallback(target.markdown, instruction, existingVersions.length),
         });
         onLogUsage(res.usage);
         const nextVersions = [...existingVersions, res.text];
@@ -507,13 +501,6 @@ export const MuyaEditorView: React.FC<MuyaEditorViewProps> = ({
         systemPrompt: assembled.systemPrompt,
         userPrompt: `${assembled.userPrompt}\n\n请联合改写以下 ${targetBlocks.length} 个选中段落（可能不相邻），保持每个 <<<BLOCK:id>>> 标记与原有 Markdown 结构：\n${selectedSnippet}`,
         taskLabel: `多段联合改稿 (${targetBlocks.length} 段)`,
-        localFallbackGenerator: () =>
-          targetBlocks
-            .map(
-              (b, idx) =>
-                `<<<BLOCK:${b.id}>>>\n${buildLocalRewriteFallback(b.markdown, instruction, idx)}`,
-            )
-            .join('\n\n'),
       });
       onLogUsage(res.usage);
 
@@ -566,10 +553,9 @@ export const MuyaEditorView: React.FC<MuyaEditorViewProps> = ({
     targetChapter: ChapterDocument;
     summaryText: string;
     isResume: boolean;
-    forceReviewFailOnce?: boolean;
   }) => {
     setPipelineBusy(true);
-    const { targetChapter, summaryText, isResume, forceReviewFailOnce } = opts;
+    const { targetChapter, summaryText, isResume } = opts;
     const existingRun =
       isResume && project.activePipelineRun?.chapterId === targetChapter.chapterId
         ? project.activePipelineRun
@@ -595,23 +581,16 @@ export const MuyaEditorView: React.FC<MuyaEditorViewProps> = ({
           systemPrompt: assembled.systemPrompt,
           userPrompt: `${assembled.userPrompt}\n\n请基于以下确认摘要撰写完整章节初稿（保留二级标题、场景分隔线 --- 与克制笔调）：\n标题：${targetChapter.title}\n摘要：${summaryText}`,
           taskLabel: '流水线 STAGE_DRAFT · 整章初稿',
-          localFallbackGenerator: () =>
-            `## ${targetChapter.title}\n\n雪声在暗阁穹顶之外沉下去，只剩铜灯灯芯偶尔爆出一声轻响。沈砚将旧档摊平在冷石案面，按着摘要线索核对每一处墨痕：「${summaryText.slice(0, 60)}」。\n\n> 档案附注：凡涉北境旧案之卷宗，须双人画押方可启封，不得私携出塔。\n\n顾衡没有立刻接话，只将青铜副印推过半寸。指节碰在冷铁边缘，发出一记短促的闷声。\n\n---\n\n门外忽然传来三下轻叩，间隔匀称得像是算准了更漏。两人同时收手，把未竟的答案压回阴影里。`,
         });
         onLogUsage(res.usage);
         return res.text;
       },
       runReview: async (draftText) => {
-        if (forceReviewFailOnce) {
-          throw new Error('模拟自动复审阶段网络中断（初稿已持久化，点击续跑将直接跳过初稿生成）');
-        }
         const res = await requestAiCompletion({
           profile: activeProfile,
           systemPrompt: '你是青简自动复审 Subagent，请检查初稿的事实一致性、Markdown 结构与去 AI 味表现，给出简明质检报告。',
           userPrompt: `请复审以下初稿：\n${draftText}`,
           taskLabel: '流水线 STAGE_REVIEW · 自动复审',
-          localFallbackGenerator: () =>
-            '自动复审通过：1) 二级标题、引用块与场景分隔线结构完整；2) 未检出“不禁/顿时/总而言之”等高频套话；3) 与前章交接事实及人物知情边界一致。',
         });
         onLogUsage(res.usage);
         return res.text;
@@ -665,35 +644,29 @@ export const MuyaEditorView: React.FC<MuyaEditorViewProps> = ({
     }
 
     try {
-      const fallback = buildLocalHandoffFallback(chapter);
       const res = await requestAiCompletion({
         profile: activeProfile,
         systemPrompt:
-          '你是青简定稿交接 Subagent。请仅返回 JSON，包含 happenedFacts(字符串数组), writingLessons(字符串数组), nextChapterHooks(字符串数组), nextDirections({id,title,premise,tension}数组)。严禁 emoji。',
+          '你是青简定稿交接 Subagent。请仅返回纯 JSON，包含 happenedFacts(字符串数组), writingLessons(字符串数组), nextChapterHooks(字符串数组), nextDirections({id,title,premise,tension}数组)。严禁 emoji。',
         userPrompt: `请为章节《${chapter.title}》生成结构化交接稿：\n${chapter.markdownContent}`,
         taskLabel: '定稿交接 Subagent',
-        localFallbackGenerator: () => JSON.stringify(fallback),
       });
       onLogUsage(res.usage);
 
-      let parsedBrief: HandoffBrief = fallback;
-      try {
-        const jsonMatch = res.text.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const obj = JSON.parse(jsonMatch[0]) as Partial<HandoffBrief>;
-          parsedBrief = {
-            chapterId: chapter.chapterId,
-            chapterTitle: chapter.title,
-            happenedFacts: Array.isArray(obj.happenedFacts) && obj.happenedFacts.length > 0 ? obj.happenedFacts : fallback.happenedFacts,
-            writingLessons: Array.isArray(obj.writingLessons) && obj.writingLessons.length > 0 ? obj.writingLessons : fallback.writingLessons,
-            nextChapterHooks: Array.isArray(obj.nextChapterHooks) && obj.nextChapterHooks.length > 0 ? obj.nextChapterHooks : fallback.nextChapterHooks,
-            nextDirections: Array.isArray(obj.nextDirections) && obj.nextDirections.length > 0 ? obj.nextDirections : fallback.nextDirections,
-            updatedAt: Date.now(),
-          };
-        }
-      } catch {
-        parsedBrief = fallback;
+      const jsonMatch = res.text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        throw new Error('模型未返回合法的 JSON 交接稿，请重试');
       }
+      const obj = JSON.parse(jsonMatch[0]) as Partial<HandoffBrief>;
+      const parsedBrief: HandoffBrief = {
+        chapterId: chapter.chapterId,
+        chapterTitle: chapter.title,
+        happenedFacts: Array.isArray(obj.happenedFacts) ? obj.happenedFacts : [],
+        writingLessons: Array.isArray(obj.writingLessons) ? obj.writingLessons : [],
+        nextChapterHooks: Array.isArray(obj.nextChapterHooks) ? obj.nextChapterHooks : [],
+        nextDirections: Array.isArray(obj.nextDirections) ? obj.nextDirections : [],
+        updatedAt: Date.now(),
+      };
 
       onUpdateProject((proj) => ({
         ...proj,
@@ -710,6 +683,8 @@ export const MuyaEditorView: React.FC<MuyaEditorViewProps> = ({
       }));
       setHandoffEditor(parsedBrief);
       onToast(`已将《${chapter.title}》标为定稿并生成可编辑交接稿`);
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : '定稿交接稿生成失败');
     } finally {
       setPipelineBusy(false);
     }
@@ -732,7 +707,6 @@ export const MuyaEditorView: React.FC<MuyaEditorViewProps> = ({
       volumeTitle: activeChapter.volumeTitle,
       directionTitle: dir?.title ?? '自由续写',
       summary: draftSummary,
-      simulateReviewFailure: false,
       busy: false,
     });
   };
@@ -769,7 +743,6 @@ export const MuyaEditorView: React.FC<MuyaEditorViewProps> = ({
         targetChapter: newChapter,
         summaryText: wizardCopy.summary,
         isResume: false,
-        forceReviewFailOnce: wizardCopy.simulateReviewFailure,
       });
     } else {
       onToast(`已新建《${newChapter.title}》`);
@@ -1142,7 +1115,6 @@ export const MuyaEditorView: React.FC<MuyaEditorViewProps> = ({
                       targetChapter: targetCh,
                       summaryText: project.activePipelineRun?.promptSummary ?? targetCh.summary,
                       isResume: true,
-                      forceReviewFailOnce: false,
                     });
                   }}
                   className="flex items-center gap-1 rounded-md bg-rose-700 px-3 py-1 text-xs font-medium text-white hover:bg-rose-800"
@@ -1206,14 +1178,6 @@ export const MuyaEditorView: React.FC<MuyaEditorViewProps> = ({
                   {activeChapter.volumeTitle} · 章节摘要与双阶段生成
                 </span>
                 <div className="flex flex-wrap items-center gap-2">
-                  <label className="flex items-center gap-1 text-[11px] text-zinc-500">
-                    <input
-                      type="checkbox"
-                      checked={simulateReviewFailForChapter}
-                      onChange={(e) => setSimulateReviewFailForChapter(e.target.checked)}
-                    />
-                    测试复审中断续跑
-                  </label>
                   <button
                     type="button"
                     disabled={pipelineBusy}
@@ -1222,7 +1186,6 @@ export const MuyaEditorView: React.FC<MuyaEditorViewProps> = ({
                         targetChapter: activeChapter,
                         summaryText: activeChapter.summary || activeChapter.title,
                         isResume: false,
-                        forceReviewFailOnce: simulateReviewFailForChapter,
                       })
                     }
                     className="flex items-center gap-1 rounded-md border border-zinc-200 bg-zinc-50 px-2.5 py-1 text-xs font-medium text-zinc-800 hover:bg-zinc-100 whitespace-nowrap shrink-0 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
@@ -2387,19 +2350,6 @@ export const MuyaEditorView: React.FC<MuyaEditorViewProps> = ({
                 }
                 className="w-full rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-xs leading-6 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
               />
-              <label className="flex items-center gap-1.5 text-zinc-500">
-                <input
-                  type="checkbox"
-                  checked={nextChapterWizard.simulateReviewFailure}
-                  onChange={(e) =>
-                    setNextChapterWizard({
-                      ...nextChapterWizard,
-                      simulateReviewFailure: e.target.checked,
-                    })
-                  }
-                />
-                模拟复审阶段失败（用于演示断点续跑跳过初稿生成）
-              </label>
             </div>
             <div className="mt-4 flex flex-wrap justify-end gap-2">
               <button

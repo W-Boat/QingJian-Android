@@ -122,12 +122,6 @@ description: 要求关键场景必须通过至少一件器物磨损或光影变�
         systemPrompt: '你是青简建书文风配置向导，根据作者目标生成 3 条精炼的中文写作纠偏准则，每条一行。严禁 emoji。',
         userPrompt: `作品：《${project.title}》（${project.genre}），作者期望风格：${wizardGoal}`,
         taskLabel: '首次建书 AI 技能配置向导',
-        localFallbackGenerator: () =>
-          [
-            `围绕「${wizardGoal.slice(0, 18)}」保持冷峻克制叙述，优先通过器物与声响承载信息`,
-            '每段严禁出现“不禁/顿时/眼中闪过一丝/总而言之”等高频套话',
-            '对白保持简短锋利，人物知情边界严格遵循上章定稿交接稿',
-          ].join('\n'),
       });
       onLogUsage(res.usage);
       const rules = res.text
@@ -147,6 +141,8 @@ description: 要求关键场景必须通过至少一件器物磨损或光影变�
       }));
       setWizardOpen(false);
       onToast('AI 配置向导已完成，已为本书启用三项核心技能与专属纠偏准则');
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'AI 技能配置向导调用失败');
     } finally {
       setWizardBusy(false);
     }

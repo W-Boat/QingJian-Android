@@ -21,7 +21,10 @@ dependencies {
   implementation(libs.androidx.core.ktx)
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.okhttp)
+  implementation(libs.okhttp.sse)
+  implementation(libs.nimbus.jose.jwt)
   implementation(libs.moshi.kotlin)
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)
+  testImplementation(libs.org.json)
 }

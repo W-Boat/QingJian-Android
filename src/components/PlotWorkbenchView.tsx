@@ -120,59 +120,45 @@ export const PlotWorkbenchView: React.FC<PlotWorkbenchViewProps> = ({
     setExtractBusy(true);
     try {
       const blocks = splitChapterBlocks(activeChapter);
-      const fallbackCandidate: LoreExtractionCandidate = {
-        id: `cand_${Date.now()}`,
-        category: 'EVENT',
-        title: `《${activeChapter.title}》新增事实候选`,
-        summary: `从《${activeChapter.title}》提炼出的待审剧情事实，需作者审阅后才归入已定稿事实档案。`,
-        chapterId: activeChapter.chapterId,
-        chapterTitle: activeChapter.title,
-        blockId: blocks[1]?.id ?? blocks[0]?.id ?? '',
-        verbatimExcerpt: (blocks[1]?.markdown ?? blocks[0]?.markdown ?? '').slice(0, 60),
-      };
-
       const res = await requestAiCompletion({
         profile: activeProfile,
         systemPrompt:
-          '你是青简资料提取 Subagent。请从章节提取 1-2 条待审事实候选（类别限定为 CHARACTER/WORLD_RULE/SCENE/EVENT/ANNOTATION），返回 JSON 数组，每项含 category, title, summary, verbatimExcerpt。严禁 emoji。',
+          '你是青简资料提取 Subagent。请从章节提取 1-3 条真实出现的待审事实候选（类别限定为 CHARACTER/WORLD_RULE/SCENE/EVENT/ANNOTATION），返回纯 JSON 数组，每项含 category, title, summary, verbatimExcerpt。严禁 emoji。',
         userPrompt: `请从《${activeChapter.title}》提取资料候选：\n${activeChapter.markdownContent}`,
         taskLabel: '五类资料候选提取',
-        localFallbackGenerator: () => JSON.stringify([fallbackCandidate]),
       });
       onLogUsage(res.usage);
 
-      let extracted: LoreExtractionCandidate[] = [fallbackCandidate];
-      try {
-        const arrMatch = res.text.match(/\[[\s\S]*\]/);
-        if (arrMatch) {
-          const parsed = JSON.parse(arrMatch[0]) as Array<Partial<LoreExtractionCandidate>>;
-          const mapped = parsed
-            .filter((item) => item.title && item.summary)
-            .map((item, idx): LoreExtractionCandidate => {
-              const excerpt = String(item.verbatimExcerpt ?? '').trim();
-              const matchedBlock =
-                blocks.find((b) => excerpt && b.markdown.includes(excerpt.slice(0, 12))) ??
-                blocks[1] ??
-                blocks[0];
-              return {
-                id: `cand_${Date.now()}_${idx}`,
-                category: (['CHARACTER', 'WORLD_RULE', 'SCENE', 'EVENT', 'ANNOTATION'].includes(
-                  String(item.category),
-                )
-                  ? item.category
-                  : 'EVENT') as LoreCategory,
-                title: String(item.title),
-                summary: String(item.summary),
-                chapterId: activeChapter.chapterId,
-                chapterTitle: activeChapter.title,
-                blockId: matchedBlock?.id ?? '',
-                verbatimExcerpt: excerpt || (matchedBlock?.markdown ?? '').slice(0, 56),
-              };
-            });
-          if (mapped.length > 0) extracted = mapped;
-        }
-      } catch {
-        extracted = [fallbackCandidate];
+      const arrMatch = res.text.match(/\[[\s\S]*\]/);
+      if (!arrMatch) {
+        throw new Error('模型未返回合法的 JSON 候选数组，请重试');
+      }
+      const parsed = JSON.parse(arrMatch[0]) as Array<Partial<LoreExtractionCandidate>>;
+      const extracted = parsed
+        .filter((item) => item.title && item.summary)
+        .map((item, idx): LoreExtractionCandidate => {
+          const excerpt = String(item.verbatimExcerpt ?? '').trim();
+          const matchedBlock =
+            blocks.find((b) => excerpt && b.markdown.includes(excerpt.slice(0, 12))) ??
+            blocks[1] ??
+            blocks[0];
+          return {
+            id: `cand_${Date.now()}_${idx}`,
+            category: (['CHARACTER', 'WORLD_RULE', 'SCENE', 'EVENT', 'ANNOTATION'].includes(
+              String(item.category),
+            )
+              ? item.category
+              : 'EVENT') as LoreCategory,
+            title: String(item.title),
+            summary: String(item.summary),
+            chapterId: activeChapter.chapterId,
+            chapterTitle: activeChapter.title,
+            blockId: matchedBlock?.id ?? '',
+            verbatimExcerpt: excerpt || (matchedBlock?.markdown ?? '').slice(0, 56),
+          };
+        });
+      if (extracted.length === 0) {
+        throw new Error('本章未识别出新的资料候选');
       }
 
       onUpdateProject((proj) => ({
@@ -183,6 +169,8 @@ export const PlotWorkbenchView: React.FC<PlotWorkbenchViewProps> = ({
         },
       }));
       onToast(`已从《${activeChapter.title}》提取 ${extracted.length} 条待审资料候选`);
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'AI 资料提取失败');
     } finally {
       setExtractBusy(false);
     }

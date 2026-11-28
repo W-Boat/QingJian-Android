@@ -20,3 +20,4 @@ my-upload-key.jks
 node_modules/
 dist/
 dist-apk/
+data/

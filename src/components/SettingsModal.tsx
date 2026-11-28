@@ -56,8 +56,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       model: newModel.trim() || 'gpt-5-codex',
       thinkingLevel: newThinking,
       endpoint: 'https://chatgpt.com/backend-api/codex/responses',
-      oauthEmail: newEmail.trim() || 'writer.oauth@example.com',
-      useLocalFallbackOnError: true,
+      oauthEmail: newEmail.trim() || undefined,
     };
     onUpsertProfile(created);
     onSelectProfile(created.id);
@@ -246,17 +245,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             <option value="HIGH">思考等级：高 (HIGH)</option>
                             <option value="XHIGH">思考等级：极深 (XHIGH)</option>
                           </select>
-
-                          <label className="flex items-center gap-1 text-[11px] text-zinc-600 dark:text-zinc-400">
-                            <input
-                              type="checkbox"
-                              checked={p.useLocalFallbackOnError}
-                              onChange={(e) =>
-                                onUpsertProfile({ ...p, useLocalFallbackOnError: e.target.checked })
-                              }
-                            />
-                            离线规则回退
-                          </label>
 
                           {profiles.length > 1 && p.id !== 'prof_gemini' && (
                             <button

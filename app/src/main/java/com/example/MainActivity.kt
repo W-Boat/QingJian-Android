@@ -4,12 +4,23 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.AutoStories
@@ -17,17 +28,8 @@ import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.EditNote
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationRail
-import androidx.compose.material3.NavigationRailItem
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Text
-import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -37,17 +39,26 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.AiAndAppearanceSettingsDialog
 import com.example.ui.theme.QingJianTheme
-import com.qingjian.core.storage.WritingMode
 import com.qingjian.feature.bookshelf.BookshelfScreen
 import com.qingjian.feature.editor.EditorWorkspaceScreen
 import com.qingjian.feature.lore.PlotWorkbenchScreen
 import com.qingjian.feature.rp.RoleplayRehearsalScreen
 import com.qingjian.feature.skills.SkillsAndSandboxScreen
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.HorizontalDivider
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -91,44 +102,128 @@ fun QingJianAppRoot(
       val isTabletWide = maxWidth >= 840.dp
 
       Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        containerColor = MiuixTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
           if (!isTabletWide) {
-            NavigationBar {
-              MainDestination.entries.forEach { dest ->
-                NavigationBarItem(
-                  selected = state.destination == dest,
-                  onClick = { vm.navigate(dest) },
-                  icon = { Icon(dest.icon(), contentDescription = dest.label) },
-                  label = { Text(dest.label, maxLines = 1) },
-                )
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .background(MiuixTheme.colorScheme.surface)
+                .navigationBarsPadding(),
+            ) {
+              HorizontalDivider()
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(horizontal = 6.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceAround,
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                MainDestination.entries.forEach { dest ->
+                  val selected = state.destination == dest
+                  val tint = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary
+                  Column(
+                    modifier = Modifier
+                      .weight(1f)
+                      .clip(RoundedCornerShape(10.dp))
+                      .background(
+                        if (selected) MiuixTheme.colorScheme.primary.copy(alpha = 0.12f)
+                        else MiuixTheme.colorScheme.surface,
+                      )
+                      .clickable { vm.navigate(dest) }
+                      .padding(vertical = 6.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                  ) {
+                    Icon(
+                      imageVector = dest.icon(),
+                      contentDescription = dest.label,
+                      tint = tint,
+                      modifier = Modifier.size(20.dp),
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                      text = dest.label,
+                      style = MiuixTheme.textStyles.footnote2,
+                      fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                      color = tint,
+                      maxLines = 1,
+                    )
+                  }
+                }
               }
             }
           }
         },
       ) { innerPadding ->
-        Row(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+        Row(
+          modifier = Modifier
+            .fillMaxSize()
+            .padding(innerPadding),
+        ) {
           if (isTabletWide) {
-            NavigationRail(
-              header = {
-                IconButton(onClick = { showAiSettings = true }) {
-                  Icon(Icons.Outlined.Settings, contentDescription = "AI 引擎与外观设置")
-                }
-              },
+            Column(
+              modifier = Modifier
+                .width(76.dp)
+                .fillMaxHeight()
+                .background(MiuixTheme.colorScheme.surface)
+                .padding(vertical = 12.dp, horizontal = 6.dp),
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-              MainDestination.entries.forEach { dest ->
-                NavigationRailItem(
-                  selected = state.destination == dest,
-                  onClick = { vm.navigate(dest) },
-                  icon = { Icon(dest.icon(), contentDescription = dest.label) },
-                  label = { Text(dest.label, maxLines = 1) },
+              IconButton(onClick = { showAiSettings = true }) {
+                Icon(
+                  imageVector = Icons.Outlined.Settings,
+                  contentDescription = "Eta 引擎与 Miuix 设置",
+                  tint = MiuixTheme.colorScheme.onSurface,
                 )
               }
+              HorizontalDivider()
+              MainDestination.entries.forEach { dest ->
+                val selected = state.destination == dest
+                val tint = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary
+                Column(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(
+                      if (selected) MiuixTheme.colorScheme.primary.copy(alpha = 0.14f)
+                      else MiuixTheme.colorScheme.surface,
+                    )
+                    .clickable { vm.navigate(dest) }
+                    .padding(vertical = 10.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                  Icon(
+                    imageVector = dest.icon(),
+                    contentDescription = dest.label,
+                    tint = tint,
+                    modifier = Modifier.size(22.dp),
+                  )
+                  Spacer(modifier = Modifier.height(3.dp))
+                  Text(
+                    text = dest.label,
+                    style = MiuixTheme.textStyles.footnote2,
+                    color = tint,
+                    maxLines = 1,
+                  )
+                }
+              }
             }
-            VerticalDivider()
+            Box(
+              modifier = Modifier
+                .width(1.dp)
+                .fillMaxHeight()
+                .background(MiuixTheme.colorScheme.dividerLine),
+            )
           }
 
-          Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+          Box(
+            modifier = Modifier
+              .weight(1f)
+              .fillMaxHeight(),
+          ) {
             val activeManifest = state.activeManifest
             val activeChapter = state.activeChapter
 
@@ -205,8 +300,31 @@ fun QingJianAppRoot(
                     onRollbackRestorePoint = vm::rollbackRestorePoint,
                   )
                 } else {
-                  Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("正在载入书稿仓库…")
+                  Column(
+                    modifier = Modifier
+                      .fillMaxSize()
+                      .padding(24.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                  ) {
+                    Text(
+                      text = "当前尚未打开任何作品仓库",
+                      style = MiuixTheme.textStyles.headline1,
+                      color = MiuixTheme.colorScheme.onBackground,
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                      text = "请先前往书架新建本地 Git 书稿仓库，或打开已有作品。",
+                      style = MiuixTheme.textStyles.body2,
+                      color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    TextButton(
+                      text = "前往书架",
+                      onClick = { vm.navigate(MainDestination.BOOKSHELF) },
+                      colors = ButtonDefaults.textButtonColorsPrimary(),
+                      minHeight = 40.dp,
+                    )
                   }
                 }
               }
@@ -284,11 +402,20 @@ fun QingJianAppRoot(
         profiles = state.aiProfiles,
         activeProfileId = state.activeProfileId,
         usageLogs = state.usageLogs,
+        isOAuthInProgress = state.isOAuthInProgress,
+        oauthStatusMessage = state.oauthStatusMessage,
+        isTestingConnection = state.isTestingConnection,
+        connectionTestResult = state.connectionTestResult,
         onToggleDarkTheme = vm::setDarkTheme,
         onSelectAccent = vm::setAccent,
         onSelectProfile = vm::selectAiProfile,
         onUpdateProfile = vm::updateAiProfile,
         onAddProfile = vm::addAiProfile,
+        onDeleteProfile = vm::deleteAiProfile,
+        onStartCodexOAuthLogin = vm::startCodexOAuthLogin,
+        onCancelCodexOAuthLogin = vm::cancelCodexOAuthLogin,
+        onSignOutCodexOAuth = vm::signOutCodexOAuth,
+        onTestActiveConnection = vm::testActiveAiConnection,
         onDismiss = { showAiSettings = false },
       )
     }

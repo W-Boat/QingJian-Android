@@ -9,7 +9,7 @@ import {
   Upload,
   UserPlus,
 } from 'lucide-react';
-import { buildLocalRpReplyFallback, requestAiCompletion } from '../core/aiClient';
+import { requestAiCompletion } from '../core/aiClient';
 import {
   encodeTavernCardToPngBytes,
   evaluateWorldbook,
@@ -134,7 +134,6 @@ export const RoleplayView: React.FC<RoleplayViewProps> = ({
           .join('\n\n'),
         userPrompt: nextHistory.map((m) => `${m.speaker}：${m.content}`).join('\n\n'),
         taskLabel: `角色对戏排练 (${selectedCard.name})`,
-        localFallbackGenerator: () => buildLocalRpReplyFallback(selectedCard, userText, hitTitles),
       });
       onLogUsage(res.usage);
 

@@ -294,7 +294,7 @@ export interface AiAccountProfile {
   thinkingLevel: ThinkingLevelType;
   endpoint: string;
   oauthEmail?: string;
-  useLocalFallbackOnError: boolean;
+  oauthAccountId?: string;
 }
 
 export interface AiUsageLog {

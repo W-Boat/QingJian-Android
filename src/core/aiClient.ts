@@ -4,16 +4,13 @@ import type {
   AiAccountProfile,
   AiUsageLog,
   ChapterDocument,
-  HandoffBrief,
   NovelProject,
   ParagraphBlock,
-  TavernCharacterCard,
 } from './types';
 
 export interface AiCompletionResult {
   text: string;
   usage: AiUsageLog;
-  usedFallback: boolean;
 }
 
 export interface AssembledContextPreview {
@@ -160,7 +157,6 @@ export function assembleTransparentContext(params: {
     .filter(Boolean)
     .join('\n\n');
 
-  // Context Compression Guard
   const userPrompt =
     rawUserPrompt.length > cfg.totalContextCharBudget
       ? rawUserPrompt.slice(0, cfg.totalContextCharBudget - 40) + '\n\n[上下文引擎已按预算自动压缩]'
@@ -176,169 +172,63 @@ export function assembleTransparentContext(params: {
   };
 }
 
+/**
+ * Calls the real `/api/ai/complete` server proxy (Gemini / OpenAI / DeepSeek / Codex Responses).
+ * Never fabricates fake local literary fallback responses on error.
+ */
 export async function requestAiCompletion(params: {
   profile: AiAccountProfile;
   systemPrompt: string;
   userPrompt: string;
   taskLabel: string;
-  localFallbackGenerator: () => string;
 }): Promise<AiCompletionResult> {
-  const { profile, systemPrompt, userPrompt, taskLabel, localFallbackGenerator } = params;
-  const start = Date.now();
+  const { profile, systemPrompt, userPrompt, taskLabel } = params;
 
-  try {
-    const res = await fetch('/api/ai/complete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemPrompt,
-        userPrompt,
-        thinkingLevel: profile.thinkingLevel,
-        taskLabel,
-      }),
-    });
-
-    if (res.ok) {
-      const data = (await res.json()) as {
-        text: string;
-        promptTokens: number;
-        completionTokens: number;
-        latencyMs: number;
-        modelUsed?: string;
-      };
-      if (data.text && data.text.trim().length > 0) {
-        return {
-          text: data.text.trim(),
-          usedFallback: false,
-          usage: {
-            id: `use_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-            profileLabel: profile.label,
-            modelName: data.modelUsed || profile.model,
-            thinkingLevel: profile.thinkingLevel,
-            taskLabel,
-            promptTokens: data.promptTokens,
-            completionTokens: data.completionTokens,
-            latencyMs: data.latencyMs,
-            timestamp: Date.now(),
-          },
-        };
-      }
-    }
-
-    const errBody = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
-    if (!profile.useLocalFallbackOnError) {
-      throw new Error(errBody.error || `AI 服务请求失败 (${res.status})`);
-    }
-  } catch (err) {
-    if (!profile.useLocalFallbackOnError) {
-      throw err instanceof Error ? err : new Error('AI 服务连接失败');
-    }
-  }
-
-  // Deterministic local literary fallback when server API key is not configured
-  const fallbackText = localFallbackGenerator();
-  const latencyMs = Math.max(120, Date.now() - start);
-  return {
-    text: fallbackText,
-    usedFallback: true,
-    usage: {
-      id: `use_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      profileLabel: `${profile.label} (本地演练回退)`,
-      modelName: `${profile.model}-local`,
+  const res = await fetch('/api/ai/complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      provider: profile.provider,
+      model: profile.model,
+      endpoint: profile.endpoint,
+      oauthAccountId: profile.oauthAccountId,
+      systemPrompt,
+      userPrompt,
       thinkingLevel: profile.thinkingLevel,
       taskLabel,
-      promptTokens: Math.ceil((systemPrompt.length + userPrompt.length) / 2),
-      completionTokens: Math.ceil(fallbackText.length / 2),
-      latencyMs,
+    }),
+  });
+
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(errBody.error || `AI 服务请求失败 (${res.status})`);
+  }
+
+  const data = (await res.json()) as {
+    text?: string;
+    promptTokens?: number;
+    completionTokens?: number;
+    latencyMs?: number;
+    modelUsed?: string;
+  };
+
+  const text = (data.text || '').trim();
+  if (!text) {
+    throw new Error('AI 接口返回了空正文，请检查提示词或重试。');
+  }
+
+  return {
+    text,
+    usage: {
+      id: `use_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      profileLabel: profile.label,
+      modelName: data.modelUsed || profile.model,
+      thinkingLevel: profile.thinkingLevel,
+      taskLabel,
+      promptTokens: data.promptTokens ?? Math.ceil((systemPrompt.length + userPrompt.length) / 2),
+      completionTokens: data.completionTokens ?? Math.ceil(text.length / 2),
+      latencyMs: data.latencyMs ?? 0,
       timestamp: Date.now(),
     },
   };
-}
-
-export function buildLocalRewriteFallback(originalMarkdown: string, instruction: string, variantSeed: number): string {
-  const cleaned = originalMarkdown
-    .replace(/不禁/g, '')
-    .replace(/顿时/g, '刹那间')
-    .replace(/眼中闪过一丝难以察觉的试探/g, '目光在铜灯灯芯上停了半息，才移回对方袖口')
-    .replace(/空气仿佛凝固了一般/g, '塔廊外风声收紧，案上烛火斜偏了一寸')
-    .replace(/——总而言之，/g, '——')
-    .replace(/总而言之，?/g, '')
-    .replace(/综上所述，?/g, '');
-
-  if (cleaned !== originalMarkdown) {
-    return cleaned;
-  }
-
-  const trimmed = originalMarkdown.trim();
-  const headingMatch = trimmed.match(/^(#{1,6}\s+)(.+)$/);
-  if (headingMatch) {
-    return `${headingMatch[1]}${headingMatch[2]}（修）`;
-  }
-  if (trimmed.startsWith('>')) {
-    return `${trimmed}——按「${instruction.slice(0, 12)}」微调语气，压低句尾余韵。`;
-  }
-
-  const suffixes = [
-    '灯影在案角微微一晃，冷铁般的沉静落进两人之间。',
-    '风雪擦过檐角铜铃，细微的金属余震把未说出口的半句话压在喉间。',
-    '指腹沿着器物边缘停住，所有试探都退回到不动声色的克制里。',
-  ];
-  const extra = suffixes[variantSeed % suffixes.length];
-  if (trimmed.endsWith('。') || trimmed.endsWith('」')) {
-    return `${trimmed}${extra}`;
-  }
-  return `${trimmed}。${extra}`;
-}
-
-export function buildLocalHandoffFallback(chapter: ChapterDocument): HandoffBrief {
-  const blocks = chapter.markdownContent
-    .split(/\n\s*\n/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0 && !s.startsWith('#') && !/^-{3,}$/.test(s));
-
-  const facts = blocks.slice(0, 3).map((b) => {
-    const clean = b.replace(/^>\s?/, '');
-    return clean.length > 48 ? `${clean.slice(0, 48)}…` : clean;
-  });
-
-  const upCount = Object.values(chapter.blockFeedback).filter((v) => v === 'UP').length;
-  const downCount = Object.values(chapter.blockFeedback).filter((v) => v === 'DOWN').length;
-
-  return {
-    chapterId: chapter.chapterId,
-    chapterTitle: chapter.title,
-    happenedFacts: facts.length > 0 ? facts : [`已完成《${chapter.title}》核心场景推进。`],
-    writingLessons: [
-      `本章记录赞 ${upCount} 处 / 踩 ${downCount} 处：优先沿用冷峻器物细节与克制对白。`,
-      '严格避免“不禁”“顿时”“眼中闪过一丝”及段尾议论总结，保持叙事留白。',
-    ],
-    nextChapterHooks: [
-      `紧接《${chapter.title}》结尾悬念，回应已埋设的核心物证与未解疑问。`,
-      '保持人物知情边界一致，不提前泄露仅单方掌握的线索。',
-    ],
-    nextDirections: [
-      {
-        id: `dir_${Date.now()}_a`,
-        title: '路线一：密室博弈与暗盟',
-        premise: '双方围绕关键物证摊牌，以交换旧案底册为条件达成脆弱同盟。',
-        tension: '外围耳目逼近，任何细微失口都会导致信任崩塌',
-      },
-      {
-        id: `dir_${Date.now()}_b`,
-        title: '路线二：决裂突围与夜遁',
-        premise: '主角识破对方隐瞒的关键缺口，先手夺取证物并借地形脱身。',
-        tension: '全城封锁升级，退路被截断，被迫转向城西暗线求助',
-      },
-    ],
-    updatedAt: Date.now(),
-  };
-}
-
-export function buildLocalRpReplyFallback(
-  card: TavernCharacterCard,
-  userMessage: string,
-  hitTitles: string[],
-): string {
-  const refNote = hitTitles.length > 0 ? `（牵动设定：${hitTitles.slice(0, 2).join('、')}）` : '';
-  return `（${card.name}收回落在案角的目光，指尖在器物边缘轻叩一下${refNote}）\n\n「你刚提到“${userMessage.slice(0, 18)}”，倒比我预想的沉得住气。既如此，先把你手里藏着的那半截实话摊开，我们再谈下一步的筹码。」`;
 }

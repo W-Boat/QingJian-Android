@@ -91,7 +91,7 @@ enum class MainDestination(val label: String) {
 }
 
 data class QingJianUiState(
-  val destination: MainDestination = MainDestination.EDITOR,
+  val destination: MainDestination = MainDestination.BOOKSHELF,
   val isDarkTheme: Boolean = false,
   val accent: QingJianAccent = QingJianAccent.JADE,
   val isGridView: Boolean = true,
@@ -123,6 +123,10 @@ data class QingJianUiState(
   val pendingJumpBlockId: String? = null,
   val aiProfiles: List<AiAccountProfile> = defaultAiProfiles(),
   val activeProfileId: String = "prof_deepseek",
+  val isOAuthInProgress: Boolean = false,
+  val oauthStatusMessage: String? = null,
+  val isTestingConnection: Boolean = false,
+  val connectionTestResult: String? = null,
   val usageLogs: List<AiUsageEntity> = emptyList(),
   val statusBanner: String? = null,
 )
@@ -154,6 +158,7 @@ private fun defaultAiProfiles(): List<AiAccountProfile> = listOf(
 class QingJianViewModel(application: Application) : AndroidViewModel(application) {
   private val appContext = application.applicationContext
   private val db = QingJianDatabase.getInstance(appContext)
+  private val prefsStore = QingJianPreferencesStore(appContext)
   private val etaRuntime = EtaAgentRuntime()
   private val jsSandbox = IsolatedJsSandbox(appContext)
   private val undoStack = RevisionUndoStack()
@@ -165,11 +170,28 @@ class QingJianViewModel(application: Application) : AndroidViewModel(application
   val uiState: StateFlow<QingJianUiState> = _uiState.asStateFlow()
 
   private var bookCollectorsJob: Job? = null
+  private var oauthLoginJob: Job? = null
 
   init {
     observeGlobalStreams()
+    observePersistedPreferences()
+  }
+
+  private fun observePersistedPreferences() {
     viewModelScope.launch {
-      seedSampleBookIfEmpty()
+      prefsStore.preferencesFlow.collect { saved ->
+        _uiState.update { cur ->
+          val restoredProfiles = saved.aiProfiles?.takeIf { it.isNotEmpty() } ?: cur.aiProfiles
+          val restoredActive = restoredProfiles.firstOrNull { it.id == saved.activeProfileId }?.id
+            ?: restoredProfiles.first().id
+          cur.copy(
+            isDarkTheme = saved.isDarkTheme,
+            accent = saved.accent,
+            aiProfiles = restoredProfiles,
+            activeProfileId = restoredActive,
+          )
+        }
+      }
     }
   }
 
@@ -199,10 +221,12 @@ class QingJianViewModel(application: Application) : AndroidViewModel(application
 
   fun setDarkTheme(dark: Boolean) {
     _uiState.update { it.copy(isDarkTheme = dark) }
+    viewModelScope.launch(Dispatchers.IO) { prefsStore.saveDarkTheme(dark) }
   }
 
   fun setAccent(accent: QingJianAccent) {
     _uiState.update { it.copy(accent = accent) }
+    viewModelScope.launch(Dispatchers.IO) { prefsStore.saveAccent(accent) }
   }
 
   fun clearBanner() {
@@ -210,25 +234,180 @@ class QingJianViewModel(application: Application) : AndroidViewModel(application
   }
 
   fun selectAiProfile(profileId: String) {
-    _uiState.update { it.copy(activeProfileId = profileId) }
+    _uiState.update { it.copy(activeProfileId = profileId, connectionTestResult = null) }
+    viewModelScope.launch(Dispatchers.IO) { prefsStore.saveActiveProfileId(profileId) }
   }
 
   fun updateAiProfile(profile: AiAccountProfile) {
+    val updatedList = _uiState.value.aiProfiles.map { if (it.id == profile.id) profile else it }
     _uiState.update { state ->
       state.copy(
-        aiProfiles = state.aiProfiles.map { if (it.id == profile.id) profile else it },
-        statusBanner = "已保存 AI 配置：${profile.label}",
+        aiProfiles = updatedList,
+        statusBanner = "已持久化保存 AI 配置：${profile.label}",
       )
+    }
+    viewModelScope.launch(Dispatchers.IO) {
+      prefsStore.saveProfiles(updatedList, _uiState.value.activeProfileId)
     }
   }
 
   fun addAiProfile(profile: AiAccountProfile) {
+    val updatedList = _uiState.value.aiProfiles + profile
     _uiState.update { state ->
       state.copy(
-        aiProfiles = state.aiProfiles + profile,
+        aiProfiles = updatedList,
         activeProfileId = profile.id,
         statusBanner = "已新增账号配置：${profile.label}",
       )
+    }
+    viewModelScope.launch(Dispatchers.IO) {
+      prefsStore.saveProfiles(updatedList, profile.id)
+    }
+  }
+
+  fun deleteAiProfile(profileId: String) {
+    val current = _uiState.value.aiProfiles
+    if (current.size <= 1) return
+    val remaining = current.filterNot { it.id == profileId }
+    val nextActive = if (_uiState.value.activeProfileId == profileId) remaining.first().id else _uiState.value.activeProfileId
+    _uiState.update {
+      it.copy(
+        aiProfiles = remaining,
+        activeProfileId = nextActive,
+        statusBanner = "已移除该 AI Profile",
+      )
+    }
+    viewModelScope.launch(Dispatchers.IO) {
+      prefsStore.saveProfiles(remaining, nextActive)
+    }
+  }
+
+  fun startCodexOAuthLogin(profileId: String, openBrowser: (String) -> Unit) {
+    oauthLoginJob?.cancel()
+    _uiState.update {
+      it.copy(
+        isOAuthInProgress = true,
+        oauthStatusMessage = "正在启动 127.0.0.1:1455 本地回环监听并唤起浏览器授权…",
+      )
+    }
+    oauthLoginJob = viewModelScope.launch(Dispatchers.IO) {
+      try {
+        val tokenSet = etaRuntime.oauthClient.signInWithBrowser { authorizeUrl ->
+          _uiState.update {
+            it.copy(oauthStatusMessage = "请在浏览器完成 ChatGPT 账号登录，授权后将自动回传至青简。")
+          }
+          viewModelScope.launch(Dispatchers.Main) {
+            openBrowser(authorizeUrl)
+          }
+        }
+        val updatedList = _uiState.value.aiProfiles.map { p ->
+          if (p.id == profileId) {
+            p.copy(
+              authCredential = tokenSet.accessToken,
+              oauthRefreshToken = tokenSet.refreshToken,
+              oauthExpiresAtMillis = tokenSet.expiresAtMillis,
+              oauthAccountId = tokenSet.accountId,
+              oauthAccountEmail = tokenSet.email,
+              oauthConnected = true,
+            )
+          } else {
+            p
+          }
+        }
+        prefsStore.saveProfiles(updatedList, _uiState.value.activeProfileId)
+        _uiState.update {
+          it.copy(
+            aiProfiles = updatedList,
+            isOAuthInProgress = false,
+            oauthStatusMessage = "ChatGPT Codex 授权成功：${tokenSet.email.ifBlank { tokenSet.accountId }}",
+            statusBanner = "ChatGPT Codex OAuth 授权已完成并持久化",
+          )
+        }
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        _uiState.update {
+          it.copy(
+            isOAuthInProgress = false,
+            oauthStatusMessage = "已取消浏览器 OAuth 授权。",
+          )
+        }
+      } catch (e: Exception) {
+        _uiState.update {
+          it.copy(
+            isOAuthInProgress = false,
+            oauthStatusMessage = "OAuth 授权失败：${e.message}",
+            statusBanner = "OAuth 授权失败：${e.message}",
+          )
+        }
+      }
+    }
+  }
+
+  fun cancelCodexOAuthLogin() {
+    oauthLoginJob?.cancel()
+    oauthLoginJob = null
+    _uiState.update {
+      it.copy(isOAuthInProgress = false, oauthStatusMessage = "已取消 OAuth 授权监听。")
+    }
+  }
+
+  fun signOutCodexOAuth(profileId: String) {
+    val updatedList = _uiState.value.aiProfiles.map { p ->
+      if (p.id == profileId) {
+        p.copy(
+          authCredential = "",
+          oauthRefreshToken = "",
+          oauthExpiresAtMillis = 0L,
+          oauthAccountId = "",
+          oauthAccountEmail = "",
+          oauthConnected = false,
+        )
+      } else {
+        p
+      }
+    }
+    _uiState.update {
+      it.copy(
+        aiProfiles = updatedList,
+        oauthStatusMessage = "已清除本地 Codex OAuth 凭据。",
+        statusBanner = "已退出当前 Codex 账号授权",
+      )
+    }
+    viewModelScope.launch(Dispatchers.IO) {
+      prefsStore.saveProfiles(updatedList, _uiState.value.activeProfileId)
+    }
+  }
+
+  fun testActiveAiConnection() {
+    _uiState.update { it.copy(isTestingConnection = true, connectionTestResult = "正在向远端接口发起真实连通性测试…") }
+    viewModelScope.launch(Dispatchers.IO) {
+      try {
+        val resp = runAiCall(
+          taskLabel = "连通性测试",
+          systemPrompt = "你是接口连通性检测助手，只回复“连接正常”四个字。",
+          userPrompt = "请回复连接正常。",
+        )
+        _uiState.update {
+          it.copy(
+            isTestingConnection = false,
+            connectionTestResult = "连通成功：${resp.modelUsed} · 延迟 ${resp.latencyMs}ms · 回复「${resp.text.take(24)}」",
+          )
+        }
+      } catch (e: Exception) {
+        _uiState.update {
+          it.copy(
+            isTestingConnection = false,
+            connectionTestResult = "连接失败：${e.message}",
+          )
+        }
+      }
+    }
+  }
+
+  private fun persistRefreshedProfile(refreshed: AiAccountProfile) {
+    val updatedList = _uiState.value.aiProfiles.map { if (it.id == refreshed.id) refreshed else it }
+    _uiState.update { it.copy(aiProfiles = updatedList) }
+    viewModelScope.launch(Dispatchers.IO) {
+      prefsStore.saveProfiles(updatedList, _uiState.value.activeProfileId)
     }
   }
 
@@ -724,7 +903,7 @@ class QingJianViewModel(application: Application) : AndroidViewModel(application
 
   // --- Resumable Two-Stage Pipeline + ForegroundService (Pillar 1) ---
 
-  fun runChapterDraftPipeline(summaryPrompt: String, simulateReviewFailure: Boolean) {
+  fun runChapterDraftPipeline(summaryPrompt: String) {
     val st = _uiState.value
     val bookId = st.activeBookId ?: return
     val chapter = st.activeChapter ?: return
@@ -758,9 +937,6 @@ class QingJianViewModel(application: Application) : AndroidViewModel(application
           resp.text
         },
         runReview = { draftText ->
-          if (simulateReviewFailure) {
-            throw IllegalStateException("模拟复审阶段网络超时（初稿已落盘，点击「从失败处继续」将复用已存初稿）")
-          }
           runAutomaticReviewStage(draftText)
         },
       )
@@ -849,88 +1025,65 @@ class QingJianViewModel(application: Application) : AndroidViewModel(application
     val chapter = st.activeChapter ?: return
 
     viewModelScope.launch(Dispatchers.IO) {
-      QingJianPipelineService.updateProgress(appContext, "青简定稿交接", "并发 Subagent 正在提炼事实、经验与伏笔…", 50)
+      QingJianPipelineService.updateProgress(appContext, "青简定稿交接", "并发 Eta Subagent 正在调用模型提炼事实、经验与伏笔…", 45)
       val finalized = chapter.copy(status = ChapterStatus.FINALIZED, updatedAt = System.currentTimeMillis())
       saveChapterToRepo(layoutForBook(bookId), finalized)
 
-      val likedSnippets = finalized.toBlocks().filter { it.vote == FeedbackVote.UP }.map { "沿用获赞段落写法：「${it.markdown.take(26)}…」" }
-      val dislikedSnippets = finalized.toBlocks().filter { it.vote == FeedbackVote.DOWN }.map { "规避踩点段落笔病：「${it.markdown.take(26)}…」" }
-
-      // Concurrent subagents: 1) Handoff Brief, 2) Lore Candidates
-      val results = etaRuntime.runSubagentsConcurrently(
-        listOf(
-          suspend {
-            HandoffBrief(
-              chapterId = finalized.chapterId,
-              chapterTitle = finalized.title,
-              happenedFacts = listOf(
-                "在「${finalized.title}」中，核心人物完成关键信息交锋，正文已定稿（${finalized.wordCount()} 字）。",
-                finalized.toBlocks().firstOrNull { !it.markdown.startsWith("#") }?.markdown?.take(48)?.let { "关键开场事件：$it…" }
-                  ?: "已确认本章场景时序与在场知情人物。",
-              ),
-              writingLessons = (likedSnippets + dislikedSnippets).ifEmpty {
-                listOf("保持克制冷峻的动作细节，继续禁用段尾总结腔。")
-              },
-              nextChapterHooks = listOf(
-                "承接本章结尾悬而未决的对峙疑问。",
-                "回应未回收伏笔并推进守塔司旧档真相。",
-              ),
-              nextDirections = listOf(
-                HandoffDirection(
-                  title = "路线一：密室结盟（和解查案）",
-                  premise = "沈砚与顾衡暂时搁置旧怨，联手比对青铜印锉痕，查明内鬼去向。",
-                  tension = "双方各藏底牌，信任随时破裂",
-                ),
-                HandoffDirection(
-                  title = "路线二：当场翻脸（孤身潜逃）",
-                  premise = "沈砚识破顾衡拖延之计，抢先携残诏从暗阁通风井脱身，触发全塔戒严。",
-                  tension = "步步追杀，信息全面封锁",
-                ),
-              ),
-            )
-          },
-          suspend {
-            extractCandidatesFromChapter(finalized)
-          },
+      try {
+        val results = etaRuntime.runSubagentsConcurrently(
+          listOf(
+            suspend { generateHandoffBriefWithAi(finalized) },
+            suspend { extractCandidatesWithAi(finalized) },
+          ),
         )
-      )
-      QingJianPipelineService.stop(appContext)
+        QingJianPipelineService.stop(appContext)
 
-      val brief = results[0] as HandoffBrief
-      @Suppress("UNCHECKED_CAST")
-      val extractedCandidates = results[1] as List<LoreExtractionCandidate>
+        val brief = results[0] as HandoffBrief
+        @Suppress("UNCHECKED_CAST")
+        val extractedCandidates = results[1] as List<LoreExtractionCandidate>
 
-      val layout = layoutForBook(bookId)
-      writeJson(layout.handoffFile(finalized.chapterId), brief, HandoffBrief::class.java)
-      val mergedCandidates = (extractedCandidates + _uiState.value.loreCandidates).distinctBy { "${it.chapterId}:${it.title}" }
-      writeListJson(layout.loreCandidatesFile, mergedCandidates, LoreExtractionCandidate::class.java)
+        val layout = layoutForBook(bookId)
+        writeJson(layout.handoffFile(finalized.chapterId), brief, HandoffBrief::class.java)
+        val mergedCandidates = (extractedCandidates + _uiState.value.loreCandidates).distinctBy { "${it.chapterId}:${it.title}" }
+        writeListJson(layout.loreCandidatesFile, mergedCandidates, LoreExtractionCandidate::class.java)
 
-      // Add alternative directions into Plot Planning (strictly isolated from confirmed facts!)
-      val newPlans = brief.nextDirections.map { dir ->
-        PlotPlanIdea(
-          title = dir.title,
-          sourceChapterId = finalized.chapterId,
-          premise = dir.premise,
-          keyBeats = listOf(dir.tension, "承接「${finalized.title}」交接铺垫"),
-          branchTag = "交接备选走向",
-        )
-      }
-      val mergedPlans = (newPlans + _uiState.value.plotPlans).distinctBy { it.title }
-      writeListJson(layout.plotPlansFile, mergedPlans, PlotPlanIdea::class.java)
+        val newPlans = brief.nextDirections.map { dir ->
+          PlotPlanIdea(
+            title = dir.title,
+            sourceChapterId = finalized.chapterId,
+            premise = dir.premise,
+            keyBeats = listOf(dir.tension, "承接「${finalized.title}」交接铺垫"),
+            branchTag = "交接备选走向",
+          )
+        }
+        val mergedPlans = (newPlans + _uiState.value.plotPlans).distinctBy { it.title }
+        writeListJson(layout.plotPlansFile, mergedPlans, PlotPlanIdea::class.java)
 
-      gitRepoForBook(bookId).commitAll("定稿并生成交接稿：${finalized.title}")
-      reindexBook(bookId)
-      refreshGitSnapshot(bookId)
+        gitRepoForBook(bookId).commitAll("定稿并生成交接稿：${finalized.title}")
+        reindexBook(bookId)
+        refreshGitSnapshot(bookId)
 
-      val allHandoffs = loadAllHandoffsFromDisk(layout)
-      _uiState.update {
-        it.copy(
-          activeChapter = finalized,
-          handoffs = allHandoffs,
-          loreCandidates = mergedCandidates,
-          plotPlans = mergedPlans,
-          statusBanner = "已定稿「${finalized.title}」，交接稿与 ${extractedCandidates.size} 条待审资料已生成。",
-        )
+        val allHandoffs = loadAllHandoffsFromDisk(layout)
+        _uiState.update {
+          it.copy(
+            activeChapter = finalized,
+            handoffs = allHandoffs,
+            loreCandidates = mergedCandidates,
+            plotPlans = mergedPlans,
+            statusBanner = "已定稿「${finalized.title}」，并发 Subagent 生成交接稿并提取 ${extractedCandidates.size} 条设定候选。",
+          )
+        }
+      } catch (e: Exception) {
+        QingJianPipelineService.stop(appContext)
+        gitRepoForBook(bookId).commitAll("定稿（待生成 AI 交接稿）：${finalized.title}")
+        reindexBook(bookId)
+        refreshGitSnapshot(bookId)
+        _uiState.update {
+          it.copy(
+            activeChapter = finalized,
+            statusBanner = "章节已标记定稿，但 AI 交接稿生成失败：${e.message}",
+          )
+        }
       }
     }
   }
@@ -975,7 +1128,7 @@ class QingJianViewModel(application: Application) : AndroidViewModel(application
       saveChapterToRepo(layoutForBook(bookId), doc)
       reindexBook(bookId)
       _uiState.update { it.copy(activeChapter = doc, destination = MainDestination.EDITOR) }
-      runChapterDraftPipeline(confirmedSummary, simulateReviewFailure = false)
+      runChapterDraftPipeline(confirmedSummary)
     }
   }
 
@@ -985,10 +1138,14 @@ class QingJianViewModel(application: Application) : AndroidViewModel(application
     val bookId = _uiState.value.activeBookId ?: return
     val ch = _uiState.value.activeChapter ?: return
     viewModelScope.launch(Dispatchers.IO) {
-      val extracted = extractCandidatesFromChapter(ch)
-      val merged = (extracted + _uiState.value.loreCandidates).distinctBy { "${it.chapterId}:${it.title}" }
-      writeListJson(layoutForBook(bookId).loreCandidatesFile, merged, LoreExtractionCandidate::class.java)
-      _uiState.update { it.copy(loreCandidates = merged, statusBanner = "已从「${ch.title}」提取 ${extracted.size} 条带原文锚点候选") }
+      try {
+        val extracted = extractCandidatesWithAi(ch)
+        val merged = (extracted + _uiState.value.loreCandidates).distinctBy { "${it.chapterId}:${it.title}" }
+        writeListJson(layoutForBook(bookId).loreCandidatesFile, merged, LoreExtractionCandidate::class.java)
+        _uiState.update { it.copy(loreCandidates = merged, statusBanner = "已从「${ch.title}」真实提取 ${extracted.size} 条带原文锚点候选") }
+      } catch (e: Exception) {
+        _uiState.update { it.copy(statusBanner = "设定提取失败：${e.message}") }
+      }
     }
   }
 
@@ -1557,7 +1714,7 @@ class QingJianViewModel(application: Application) : AndroidViewModel(application
           messages = listOf(ChatMessage("user", userPrompt)),
           taskLabel = taskLabel,
         ),
-        allowLocalRuleEngineWhenNoKey = true,
+        onProfileRefreshed = ::persistRefreshedProfile,
       )
       db.aiUsageDao().insert(
         AiUsageEntity(
@@ -1571,71 +1728,112 @@ class QingJianViewModel(application: Application) : AndroidViewModel(application
           completionTokens = response.completionTokens,
           latencyMs = response.latencyMs,
           timestamp = System.currentTimeMillis(),
-        )
+        ),
       )
       response
     }
 
-  private fun extractCandidatesFromChapter(chapter: ChapterDocument): List<LoreExtractionCandidate> {
-    val blocks = chapter.toBlocks()
-    val result = mutableListOf<LoreExtractionCandidate>()
-    blocks.forEach { blk ->
-      val text = blk.markdown
-      if (text.contains("白塔") && text.contains("禁令")) {
-        result.add(
-          LoreExtractionCandidate(
-            category = LoreCategory.WORLD_RULE,
-            title = "白塔子时禁令",
-            summary = "子时之后严禁擅启诏匣或私入白塔三层暗阁。",
-            chapterId = chapter.chapterId,
-            chapterTitle = chapter.title,
-            blockId = blk.id,
-            verbatimExcerpt = text.take(56),
-          )
-        )
-      }
-      if (text.contains("青铜印")) {
-        result.add(
-          LoreExtractionCandidate(
-            category = LoreCategory.EVENT,
-            title = "青铜旧印锉痕现身",
-            summary = "印钮边缘留有掌印人亲手磨去的半枚暗记，牵出三年前北境军报失窃旧案。",
-            chapterId = chapter.chapterId,
-            chapterTitle = chapter.title,
-            blockId = blk.id,
-            verbatimExcerpt = text.take(56),
-          )
-        )
-      }
-      if (blk.annotation.isNotBlank()) {
-        result.add(
-          LoreExtractionCandidate(
-            category = LoreCategory.ANNOTATION,
-            title = "作者批注归档",
-            summary = blk.annotation,
-            chapterId = chapter.chapterId,
-            chapterTitle = chapter.title,
-            blockId = blk.id,
-            verbatimExcerpt = text.take(48),
-          )
-        )
+  private suspend fun generateHandoffBriefWithAi(chapter: ChapterDocument): HandoffBrief {
+    val likedSnippets = chapter.toBlocks().filter { it.vote == FeedbackVote.UP }
+      .map { "获赞段落：${it.markdown.take(60)}" }
+    val dislikedSnippets = chapter.toBlocks().filter { it.vote == FeedbackVote.DOWN }
+      .map { "踩点段落：${it.markdown.take(60)}" }
+    val feedbackContext = (likedSnippets + dislikedSnippets).joinToString("\n")
+    val resp = runAiCall(
+      taskLabel = "定稿交接提炼",
+      systemPrompt = "你是长篇小说剧情总编。请严格基于提供的章节正文与作者赞/踩反馈，仅返回合法 JSON，不要包含 Markdown 代码块，严禁使用 emoji。格式：{\"happenedFacts\":[\"...\"],\"writingLessons\":[\"...\"],\"nextChapterHooks\":[\"...\"],\"nextDirections\":[{\"title\":\"...\",\"premise\":\"...\",\"tension\":\"...\"}]}",
+      userPrompt = "【章节标题】${chapter.title}\n【作者反馈】\n${feedbackContext.ifBlank { "无" }}\n\n【章节正文】\n${chapter.markdownContent}",
+    )
+    val jsonStr = extractJsonBlock(resp.text)
+    val root = org.json.JSONObject(jsonStr)
+    fun jsonStringList(key: String): List<String> {
+      val arr = root.optJSONArray(key) ?: return emptyList()
+      return (0 until arr.length()).mapNotNull { arr.optString(it).takeIf(String::isNotBlank) }
+    }
+    val dirsArr = root.optJSONArray("nextDirections")
+    val dirs = buildList {
+      if (dirsArr != null) {
+        for (i in 0 until dirsArr.length()) {
+          val obj = dirsArr.optJSONObject(i) ?: continue
+          val title = obj.optString("title").trim()
+          if (title.isNotBlank()) {
+            add(
+              HandoffDirection(
+                title = title,
+                premise = obj.optString("premise").trim(),
+                tension = obj.optString("tension").trim(),
+              ),
+            )
+          }
+        }
       }
     }
-    if (result.isEmpty() && blocks.isNotEmpty()) {
-      val first = blocks.first()
-      result.add(
-        LoreExtractionCandidate(
-          category = LoreCategory.SCENE,
-          title = "${chapter.title} 核心场景",
-          summary = "自动识别自本章正文的关键场景事实，请审阅后决定是否入库。",
-          chapterId = chapter.chapterId,
-          chapterTitle = chapter.title,
-          blockId = first.id,
-          verbatimExcerpt = first.markdown.take(56),
-        )
+    return HandoffBrief(
+      chapterId = chapter.chapterId,
+      chapterTitle = chapter.title,
+      happenedFacts = jsonStringList("happenedFacts"),
+      writingLessons = jsonStringList("writingLessons"),
+      nextChapterHooks = jsonStringList("nextChapterHooks"),
+      nextDirections = dirs,
+    )
+  }
+
+  private suspend fun extractCandidatesWithAi(chapter: ChapterDocument): List<LoreExtractionCandidate> {
+    val blocks = chapter.toBlocks()
+    val annotationCandidates = blocks.filter { it.annotation.isNotBlank() }.map { blk ->
+      LoreExtractionCandidate(
+        category = LoreCategory.ANNOTATION,
+        title = "作者批注：${blk.annotation.take(18)}",
+        summary = blk.annotation,
+        chapterId = chapter.chapterId,
+        chapterTitle = chapter.title,
+        blockId = blk.id,
+        verbatimExcerpt = blk.markdown.take(56),
       )
     }
-    return result.distinctBy { "${it.category}:${it.title}" }
+
+    val numberedBlocks = blocks.joinToString("\n") { "[${it.id}] ${it.markdown}" }
+    val resp = runAiCall(
+      taskLabel = "设定候选抽取",
+      systemPrompt = "你是长篇小说资料库审校员。请从带段落编号的正文中抽取真实出现的人物、地点/场景、世界规则或关键事件，严格仅返回合法 JSON 数组（不含 Markdown 围栏，禁用 emoji）：[{\"category\":\"CHARACTER|SCENE|WORLD_RULE|EVENT\",\"title\":\"...\",\"summary\":\"...\",\"blockId\":\"...\",\"verbatimExcerpt\":\"...\"}]",
+      userPrompt = "【章节】${chapter.title}\n\n$numberedBlocks",
+    )
+    val jsonStr = extractJsonBlock(resp.text, expectArray = true)
+    val arr = org.json.JSONArray(jsonStr)
+    val aiCandidates = buildList {
+      for (i in 0 until arr.length()) {
+        val obj = arr.optJSONObject(i) ?: continue
+        val title = obj.optString("title").trim()
+        if (title.isBlank()) continue
+        val cat = runCatching { LoreCategory.valueOf(obj.optString("category").trim().uppercase()) }
+          .getOrDefault(LoreCategory.EVENT)
+        val blkId = obj.optString("blockId").trim().ifBlank { blocks.firstOrNull()?.id.orEmpty() }
+        val excerpt = obj.optString("verbatimExcerpt").trim().ifBlank {
+          blocks.firstOrNull { it.id == blkId }?.markdown?.take(56).orEmpty()
+        }
+        add(
+          LoreExtractionCandidate(
+            category = cat,
+            title = title,
+            summary = obj.optString("summary").trim(),
+            chapterId = chapter.chapterId,
+            chapterTitle = chapter.title,
+            blockId = blkId,
+            verbatimExcerpt = excerpt,
+          ),
+        )
+      }
+    }
+    return (annotationCandidates + aiCandidates).distinctBy { "${it.category}:${it.title}" }
+  }
+
+  private fun extractJsonBlock(raw: String, expectArray: Boolean = false): String {
+    val cleaned = raw.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+    val startChar = if (expectArray) '[' else '{'
+    val endChar = if (expectArray) ']' else '}'
+    val start = cleaned.indexOf(startChar)
+    val end = cleaned.lastIndexOf(endChar)
+    return if (start >= 0 && end > start) cleaned.substring(start, end + 1) else cleaned
   }
 
   // --- Disk & Room Sync Helpers ---
@@ -1781,282 +1979,4 @@ class QingJianViewModel(application: Application) : AndroidViewModel(application
     return runCatching { adapter.fromJson(file.readText()) }.getOrNull().orEmpty()
   }
 
-  // --- Rich First-Launch Sample Novel Seeding (《白塔遗诏》) ---
-
-  private suspend fun seedSampleBookIfEmpty() = withContext(Dispatchers.IO) {
-    val existing = db.bookIndexDao().getBook("book_white_tower")
-    if (existing != null) {
-      openBook("book_white_tower", switchToEditor = false)
-      return@withContext
-    }
-
-    val bookId = "book_white_tower"
-    val layout = layoutForBook(bookId)
-    val git = BookGitRepository(layout)
-    layout.ensureDirectories()
-
-    val manifest = BookManifest(
-      id = bookId,
-      title = "白塔遗诏",
-      author = "林墨",
-      genre = "悬疑古风",
-      synopsis = "永熙十四年冬夜，一纸缺角青铜印与半卷白塔禁令，将沉寂三年的北境军报失窃旧案重新推上风口。",
-      coverColorHex = 0xFF1A3A3A,
-      coverAccentHex = 0xFF2B6E63,
-      wordCountGoalPerChapter = 3000,
-      editorWidthDp = 680,
-      writingMode = WritingMode.HUMAN_LED,
-      aiWizardCompleted = true,
-    )
-    writeJson(layout.bookManifestFile, manifest, BookManifest::class.java)
-
-    val ch1 = ChapterDocument(
-      chapterId = "ch_001",
-      bookId = bookId,
-      volumeTitle = "第一卷 雪夜白塔",
-      title = "第一章 寒灯启塔",
-      order = 1,
-      status = ChapterStatus.FINALIZED,
-      summary = "沈砚冒雪赴约登白塔，发现青铜药杵缺口与守塔司夜禁异常。",
-      markdownContent = """
-        |## 第一章 寒灯启塔
-        |
-        |永熙十四年腊月初七，雪粒打在白塔青灰色的檐瓦上，发出细密如盐的声响。沈砚提着一盏防风铜灯拾级而上，靴底踩碎石阶薄冰，回声在空荡的塔廊里荡开三层。
-        |
-        |> 白塔禁令：子时之后，凡未持司礼监勘合者不得踏足三层暗阁，违者由守塔司就地拿问。
-        |
-        |他在二层转角停步，指尖掠过墙龛里半截被雪风吹冷的青铜药杵。药杵底座缺了一角，断口平滑发亮，显然不是经年磨损，而是被人用细锉刻意抹去了编号。
-        |
-        |---
-        |
-        |「沈大人来得比约定早了一刻。」阴影里传来低缓的脚步声，守塔司副使顾衡未佩长刀，只捧着一只缠了黑绸的木匣，「你若此刻回头，还能赶上城门落锁前的最后一班更鼓。」
-      """.trimMargin(),
-      blockFeedback = mapOf("blk_ch_001_2" to FeedbackVote.UP),
-      blockAnnotations = mapOf("blk_ch_001_4" to "关键物证：青铜药杵缺口需在第三章与旧印暗记呼应"),
-    )
-
-    val ch2 = ChapterDocument(
-      chapterId = "ch_002",
-      bookId = bookId,
-      volumeTitle = "第一卷 雪夜白塔",
-      title = "第二章 暗阁旧档",
-      order = 2,
-      status = ChapterStatus.DRAFT,
-      summary = "沈砚与顾衡在三层暗阁核对守塔司旧档，围绕青铜印锉痕与白塔禁令展开试探。",
-      markdownContent = """
-        |## 第二章 暗阁旧档
-        |
-        |三层暗阁没有窗，只有穹顶垂下一束冷白的雪光，正正落在案台中央那枚缺了半角的青铜印上。沈砚解开大氅时，肩头冰碴滚落地砖缝隙，化开几道极浅的水痕。
-        |
-        |顾衡坐在灯影边缘，将一卷泛黄的守塔司旧档推过案心。他不禁微微抬眸，眼中闪过一丝难以察觉的试探，空气仿佛凝固了一般。
-        |
-        |「白塔禁令白纸黑字写着，子时后严禁启封诏匣。」顾衡指节轻叩匣盖，「三年前北境军报失窃那夜，值守白塔的正是你兄长。今夜你若执意开匣，便等于替旧案重新掀棺。」
-        |
-        |---
-        |
-        |沈砚没有先看旧档，而是俯身按住青铜印钮侧面的浅痕。那道锉痕的弧度，与二层药杵底座的缺口如出一辙——总而言之，当年动手的绝非外贼，而是手握塔钥的掌印人。
-      """.trimMargin(),
-      blockFeedback = mapOf(
-        "blk_ch_002_2" to FeedbackVote.UP,
-        "blk_ch_002_3" to FeedbackVote.DOWN,
-      ),
-      blockAnnotations = mapOf("blk_ch_002_3" to "本段含“不禁”“眼中闪过一丝”“空气仿佛凝固”，可用隔离 JS 沙箱破甲检查或双击局部改稿"),
-    )
-
-    saveChapterToRepo(layout, ch1)
-    saveChapterToRepo(layout, ch2)
-
-    val ch1Handoff = HandoffBrief(
-      chapterId = "ch_001",
-      chapterTitle = "第一章 寒灯启塔",
-      happenedFacts = listOf(
-        "永熙十四年腊月初七雪夜，沈砚持铜灯独自登白塔赴约。",
-        "沈砚在二层发现被细锉磨去编号的青铜药杵（仅沈砚本人知情）。",
-        "守塔司副使顾衡手捧黑绸木匣现身，暗示城门将闭，劝沈砚退走。",
-      ),
-      writingLessons = listOf(
-        "沿用：雪声、薄冰、铜灯等低饱和冷感官细节，叙事克制有压迫感。",
-        "避免：禁止出现“不禁”“顿时”“眼中闪过一丝”及段尾“总而言之”式总结腔。",
-      ),
-      nextChapterHooks = listOf(
-        "黑绸木匣中究竟盛放何物？为何顾衡冒着违背白塔禁令的风险夜约沈砚？",
-        "二层青铜药杵的锉痕将在三层与青铜旧印形成直接物证呼应。",
-      ),
-      nextDirections = listOf(
-        HandoffDirection(
-          title = "和解路线：暗阁对档结盟",
-          premise = "沈砚亮出药杵缺口与青铜印比对，迫使顾衡吐露三年前失窃当夜的值守名单。",
-          tension = "两人各怀目的结成脆弱同盟，门外监察使将至",
-        ),
-        HandoffDirection(
-          title = "决裂路线：夺匣夜遁",
-          premise = "沈砚判定木匣系诱饵，反手熄灯制住顾衡，独自破开三层通风暗道查证。",
-          tension = "守塔司全面封塔，主角陷入孤立追捕",
-        ),
-      ),
-    )
-    writeJson(layout.handoffFile("ch_001"), ch1Handoff, HandoffBrief::class.java)
-
-    val foreshadows = listOf(
-      ForeshadowThread(
-        id = "fs_bronze_notch",
-        title = "青铜器上的半寸锉痕",
-        description = "二层药杵与三层掌印人青铜印拥有完全一致的细锉磨痕，指向三年前北境军报失窃内鬼。",
-        anchors = listOf(
-          ForeshadowAnchor(
-            stage = ForeshadowStage.PLANT,
-            chapterId = "ch_001",
-            chapterTitle = "第一章 寒灯启塔",
-            blockId = "blk_ch_001_4",
-            excerpt = "药杵底座缺了一角，断口平滑发亮，显然不是经年磨损",
-            note = "初次埋设物证特征",
-          ),
-          ForeshadowAnchor(
-            stage = ForeshadowStage.ECHO,
-            chapterId = "ch_002",
-            chapterTitle = "第二章 暗阁旧档",
-            blockId = "blk_ch_002_6",
-            excerpt = "那道锉痕的弧度，与二层药杵底座的缺口如出一辙",
-            note = "二章呼应，尚未回收幕后真凶",
-          ),
-        ),
-        isResolved = false,
-      ),
-    )
-    writeListJson(layout.foreshadowsFile, foreshadows, ForeshadowThread::class.java)
-
-    val lore = listOf(
-      LoreEntry(
-        id = "lore_shen_yan",
-        category = LoreCategory.CHARACTER,
-        title = "沈砚",
-        content = "前刑部录事，沈氏旧案幸存者。习惯通过器物细微磨损推理真相，言语克制冷峻。",
-        sourceChapterId = "ch_001",
-        sourceBlockId = "blk_ch_001_2",
-        sourceExcerpt = "沈砚提着一盏防风铜灯拾级而上",
-      ),
-      LoreEntry(
-        id = "lore_gu_heng",
-        category = LoreCategory.CHARACTER,
-        title = "顾衡",
-        content = "守塔司副使，执掌白塔夜巡与旧档封存。看似恪守塔规，实则暗查三年前北境军报失窃真相。",
-        sourceChapterId = "ch_001",
-        sourceBlockId = "blk_ch_001_6",
-        sourceExcerpt = "守塔司副使顾衡未佩长刀，只捧着一只缠了黑绸的木匣",
-      ),
-      LoreEntry(
-        id = "lore_white_tower",
-        category = LoreCategory.SCENE,
-        title = "白塔三层暗阁",
-        content = "无窗穹顶密室，专储历年绝密诏匣与司礼监旧档，仅子时前凭勘合可入。",
-        sourceChapterId = "ch_002",
-        sourceBlockId = "blk_ch_002_2",
-        sourceExcerpt = "三层暗阁没有窗，只有穹顶垂下一束冷白的雪光",
-      ),
-    )
-    writeListJson(layout.loreEntitiesFile, lore, LoreEntry::class.java)
-
-    val candidates = listOf(
-      LoreExtractionCandidate(
-        category = LoreCategory.EVENT,
-        title = "北境军报失窃旧案",
-        summary = "三年前失窃当夜由沈砚兄长值守白塔，如今旧档与青铜印锉痕重现疑云。",
-        chapterId = "ch_002",
-        chapterTitle = "第二章 暗阁旧档",
-        blockId = "blk_ch_002_4",
-        verbatimExcerpt = "三年前北境军报失窃那夜，值守白塔的正是你兄长",
-      )
-    )
-    writeListJson(layout.loreCandidatesFile, candidates, LoreExtractionCandidate::class.java)
-
-    val causalGraph = CausalGraphData(
-      nodes = listOf(
-        CausalNode("n1", "ch_001", "雪夜赴约登白塔", "沈砚持灯进入禁区", 40f, 45f),
-        CausalNode("n2", "ch_001", "发现药杵锉痕", "二层墙龛现人为磨痕", 260f, 45f),
-        CausalNode("n3", "ch_002", "顾衡出示黑绸木匣", "暗阁核验守塔司旧档", 150f, 165f),
-      ),
-      edges = listOf(
-        CausalEdge("e1", "n1", "n2", "沿阶上行途经二层墙龛", confirmed = true, aiSuggested = false),
-        CausalEdge("e2", "n2", "n3", "药杵锉痕与青铜印暗记形成比对动机", confirmed = false, aiSuggested = true),
-      ),
-    )
-    writeJson(layout.causalGraphFile, causalGraph, CausalGraphData::class.java)
-
-    val plans = listOf(
-      PlotPlanIdea(
-        title = "卷末分支 A：和解查案路线",
-        sourceChapterId = "ch_002",
-        premise = "沈砚与顾衡在监察使敲门前达成秘密协定，伪造封条拖延时间。",
-        keyBeats = listOf("核对司礼监墨印真伪", "合力揪出磨去暗记的第三人"),
-        branchTag = "和解路线构思",
-      ),
-      PlotPlanIdea(
-        title = "卷末分支 B：决裂潜逃路线",
-        sourceChapterId = "ch_002",
-        premise = "沈砚怀疑顾衡设局栽赃，熄灯夺印从暗阁风井撤离白塔。",
-        keyBeats = listOf("触发白塔全境夜禁追捕", "转入城西药铺寻谢晚晴核验朱批"),
-        branchTag = "决裂路线构思",
-      ),
-    )
-    writeListJson(layout.plotPlansFile, plans, PlotPlanIdea::class.java)
-
-    val worldbook = listOf(
-      WorldbookEntry(
-        id = "wb_era",
-        title = "大昭永熙纪年",
-        content = "故事发生于大昭永熙十四年隆冬，朝局由司礼监与守塔司分掌内廷机密。",
-        alwaysActive = true,
-        priority = 100,
-      ),
-      WorldbookEntry(
-        id = "wb_tower_ban",
-        title = "白塔夜禁律令",
-        content = "白塔三层暗阁子时后封锁，凡无勘合擅启诏匣者，由守塔司按谋逆论处，立时落闸锁塔。",
-        primaryKeys = listOf("白塔"),
-        secondaryKeys = listOf("禁令", "夜禁", "子时"),
-        secondaryLogic = SecondaryKeyLogic.AND_ANY,
-        priority = 90,
-        recursiveScan = true,
-      ),
-      WorldbookEntry(
-        id = "wb_guard_bureau",
-        title = "守塔司编制与青铜旧印",
-        content = "守塔司直属御前，仅正副二使持有青铜旧印；每枚印钮内侧刻有唯一暗记，严禁私磨。",
-        primaryKeys = listOf("守塔司", "青铜印"),
-        secondaryLogic = SecondaryKeyLogic.NONE,
-        priority = 80,
-        recursiveScan = true,
-      ),
-    )
-    writeListJson(layout.worldbookEntriesFile, worldbook, WorldbookEntry::class.java)
-
-    val styleProfile = StyleDistillationAnalyzer.analyze("第一章 寒灯启塔", ch1.markdownContent)
-    val skillsState = BookSkillsState(
-      styleProfile = styleProfile,
-      scripts = DefaultSandboxScripts.builtIns(),
-    )
-    writeJson(layout.skillsConfigFile, skillsState, BookSkillsState::class.java)
-
-    val rpCards = listOf(
-      TavernCharacterCard(
-        id = "card_gu_heng",
-        name = "顾衡",
-        description = "守塔司副使，冷峻克制，擅长在对话中以退为进、借规矩施压。",
-        personality = "滴水不漏、言简意赅、惜字如金",
-        scenario = "永熙十四年雪夜，白塔三层暗阁灯下对峙",
-        firstMessage = "（顾衡指尖轻压在黑绸木匣的铜扣上，未抬眼看灯）\n\n「你既把二层药杵的事咽回肚里，今夜便不必再绕弯子。白塔禁令响前，你只有一刻钟问话。」",
-        tags = listOf("白塔遗诏", "守塔司"),
-      )
-    )
-    writeListJson(layout.rpCardsFile, rpCards, TavernCharacterCard::class.java)
-
-    // Initialize real JGit repo + create an alternative route branch so multi-route Git works immediately!
-    val baseCommit = git.initIfNeeded("初始化《白塔遗诏》主线书稿")
-    git.createBranchFromCommit("route-reconciliation", baseCommit.hash, switchImmediately = false)
-
-    reindexBook(bookId)
-    persistForeshadows(bookId, foreshadows)
-    persistCausalGraph(bookId, causalGraph, "已加载示例长篇《白塔遗诏》")
-    openBook(bookId, switchToEditor = false)
-  }
 }

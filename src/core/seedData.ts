@@ -10,7 +10,6 @@ export function createInitialAiProfiles(): AiAccountProfile[] {
       model: 'gemini-4-hydrogen',
       thinkingLevel: 'MEDIUM',
       endpoint: '/api/ai/complete',
-      useLocalFallbackOnError: true,
     },
     {
       id: 'prof_codex_1',
@@ -19,8 +18,6 @@ export function createInitialAiProfiles(): AiAccountProfile[] {
       model: 'gpt-5-codex',
       thinkingLevel: 'HIGH',
       endpoint: 'https://chatgpt.com/backend-api/codex/responses',
-      oauthEmail: 'author.studio@example.com',
-      useLocalFallbackOnError: true,
     },
     {
       id: 'prof_deepseek',
@@ -29,7 +26,6 @@ export function createInitialAiProfiles(): AiAccountProfile[] {
       model: 'deepseek-reasoner',
       thinkingLevel: 'HIGH',
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
-      useLocalFallbackOnError: true,
     },
   ];
 }
